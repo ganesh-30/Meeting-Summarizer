@@ -1,0 +1,72 @@
+# Core dependencies
+openai-whisper
+openai
+python-dotenv
+pydub
+numpy
+torch
+tqdm
+PyPDF2
+pdfminer.six
+
+# NLP processing
+nltk
+spacy
+transformers
+sentence-transformers
+pyannote.audio
+#pytube  # for YouTube audio extraction
+
+# Data handling
+pandas
+python-json-logger
+
+# API/Web
+fastapi
+uvicorn
+python-multipart
+flask
+werkzeug
+reportlab
+
+# LangChain Core
+
+Langchain
+
+langchain-core
+langchain-community
+langchain-text-splitters
+
+#OpenAI Integration
+
+langchain-openai
+
+openai
+
+# Anthropic Integration
+
+langchain-anthropic
+
+#Google Gemini (PaLM) Integration
+
+langchain-google-genai
+
+google-generativeai
+
+# Hugging Face Integration
+
+langchain-huggingface
+
+transformers
+
+huggingface-hub
+
+# Environment Variable Management
+
+python-dotenv
+
+#Machine Learning Utilities
+
+numpy
+
+scikit-learn
