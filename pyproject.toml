@@ -1,0 +1,31 @@
+[project]
+name = "Meeting-Assistant"
+version = "0.0.1"
+description = "An MLOps project for productionizing models"
+authors = [{name = "Ganesh Deshpande", email = "ganeshdeshpande5520@gmail.com"}]
+requires-python = ">=3.9"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = [
+"data*",
+"recordings*",
+"vector_store*",
+"logs*",
+"models*",
+"outputs*",
+"cache*",
+"venv*",
+".venv*",
+"backend.py",
+"pdf_extractor.py",
+"pdf_generator.py",
+"summary_generator.py",
+"transcribe.py",
+"pycache",
+".egg-info*"
+]
+
+[tool.setuptools.dynamic]
+dependencies = {file = "requirements.txt"}
