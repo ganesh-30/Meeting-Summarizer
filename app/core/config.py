@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     MAX_AUDIO_SIZE_MB: int = 25         # max upload size
 
     # ── Whisper / Transcription ───────────────────────────
-    WHISPER_MODEL: str = "smallwhisper-large-v3"         # base/small/medium
+    WHISPER_MODEL: str = "whisper-large-v3"         # base/small/medium
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"  # most efficient on cpu
     WHISPER_LANGUAGE: str = "en"

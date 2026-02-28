@@ -995,37 +995,28 @@
             ? 'audio/webm;codecs=opus'
             : 'audio/webm';
 
-        let headerChunk = null;  // stores the first chunk which has the webm header
+        let headerChunk = null;
 
-        mediaRecorder = new MediaRecorder(stream, {
-            mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                ? 'audio/webm;codecs=opus'
-                : 'audio/webm'
-        });
+        mediaRecorder = new MediaRecorder(stream, { mimeType });  // use the variable
 
         mediaRecorder.ondataavailable = async (event) => {
-            if (event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
-                
-                if (headerChunk === null) {
-                    // first chunk — contains the webm header
-                    // save it and send it as is
-                    headerChunk = event.data;
-                    const buffer = await event.data.arrayBuffer();
-                    ws.send(buffer);
-                } else {
-                    // subsequent chunks — missing the header
-                    // combine header + current chunk to make valid webm
-                    const combined = new Blob(
-                        [headerChunk, event.data],
-                        { type: mediaRecorder.mimeType }
-                    );
-                    const buffer = await combined.arrayBuffer();
-                    ws.send(buffer);
-                }
+            if (event.data.size === 0) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            const buffer = await event.data.arrayBuffer();
+
+            if (headerChunk === null) {
+                headerChunk = buffer.slice(0, 4096);
+                ws.send(buffer);
+            } else {
+                const combined = new Uint8Array(headerChunk.byteLength + buffer.byteLength);
+                combined.set(new Uint8Array(headerChunk), 0);
+                combined.set(new Uint8Array(buffer), headerChunk.byteLength);
+                ws.send(combined.buffer);
             }
         };
 
-        mediaRecorder.start(10000);
+        mediaRecorder.start(15000);
 
         isRecording = true;
         startTimer();
