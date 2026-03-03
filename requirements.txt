@@ -40,7 +40,7 @@
 
 # #OpenAI Integration
 
-# langchain-openai
+langchain-openai
 
 # openai
 
@@ -73,7 +73,6 @@
 # # scikit-learn
 # -e .
 
--e .
 
 # Web Framework
 fastapi
@@ -111,3 +110,5 @@ pandas
 
 # Environment
 -e .
+chromadb 
+sentence-transformers

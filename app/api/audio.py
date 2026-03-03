@@ -1,5 +1,6 @@
 import sys
 import json
+from app.services.rag import MeetingVectorStore, TranscriptIngestionPipeline, run_agent
 import asyncio
 from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -16,26 +17,23 @@ from app.core.exceptions import (
 logger = get_logger(__name__)
 router = APIRouter()
 
-# progressive summary every 10 minutes
-PROGRESSIVE_SUMMARY_INTERVAL = 600  # seconds
+PROGRESSIVE_SUMMARY_INTERVAL = 600
 
 
 class MeetingSession:
-    """
-    Holds all state for one meeting session.
-    Created when WebSocket connects, destroyed when it closes.
-    """
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.transcript_chunks = []      # list of transcribed text chunks
+        self.transcript_chunks = []
         self.chunk_count = 0
         self.started_at = datetime.now()
         self.last_summary_at = datetime.now()
         self.is_recording = True
+        # ── RAG: one store + pipeline per session ──────────────────────────
+        self.vector_store = MeetingVectorStore(session_id)
+        self.pipeline = TranscriptIngestionPipeline(self.vector_store)
 
     @property
     def full_transcript(self) -> str:
-        """Returns complete transcript as single string."""
         return " ".join(self.transcript_chunks)
 
     @property
@@ -50,22 +48,14 @@ class MeetingSession:
 
 @router.websocket("/ws/audio")
 async def audio_websocket(websocket: WebSocket, session_id: str):
-    """
-    Main WebSocket endpoint for live meeting audio.
-
-    Handles:
-    - Real-time audio chunk processing
-    - Live transcript streaming
-    - Progressive summaries every 10 minutes
-    - Q&A questions from user
-    - Stop signal and final summary trigger
-    """
     await websocket.accept()
     session = MeetingSession(session_id)
 
+    # ── RAG: start ingestion worker when session begins ────────────────────
+    session.pipeline.start()
+
     logger.info(f"Session {session_id} started")
 
-    # send confirmation to frontend
     await _send(websocket, {
         "type": "status",
         "message": "Recording started",
@@ -74,16 +64,13 @@ async def audio_websocket(websocket: WebSocket, session_id: str):
 
     try:
         while True:
-            # receive either bytes (audio) or text (control messages)
             message = await websocket.receive()
 
-            # ── Audio Chunk ──────────────────────────────────
             if "bytes" in message and message["bytes"]:
                 await _handle_audio_chunk(
                     websocket, session, message["bytes"]
                 )
 
-            # ── Text Control Messages ────────────────────────
             elif "text" in message and message["text"]:
                 data = json.loads(message["text"])
                 await _handle_text_message(websocket, session, data)
@@ -112,14 +99,6 @@ async def _handle_audio_chunk(
     session: MeetingSession,
     audio_bytes: bytes
 ):
-    """
-    Processes one audio chunk:
-    1. Convert webm → wav
-    2. Transcribe wav → text
-    3. Clean up temp file
-    4. Send transcript to frontend
-    5. Check if progressive summary is due
-    """
     session.chunk_count += 1
     chunk_id = f"{session.session_id}_{session.chunk_count}"
 
@@ -128,22 +107,20 @@ async def _handle_audio_chunk(
     wav_path = None
 
     try:
-        # step 1 — convert audio format
         wav_path = convert_webm_to_wav(audio_bytes, chunk_id)
-
-        # step 2 — transcribe
         text = transcribe_chunk(wav_path)
 
         if not text or len(text.strip()) == 0:
             logger.warning(f"Chunk {chunk_id} produced empty transcript — skipping")
             return
 
-        # step 3 — add to session transcript
         session.transcript_chunks.append(text.strip())
+
+        # ── RAG: ingest chunk into vector store (non-blocking) ─────────────
+        session.pipeline.ingest(text.strip(), session.chunk_count)
 
         logger.info(f"Chunk {chunk_id} transcribed: '{text[:50]}...'")
 
-        # step 4 — send transcript to frontend
         await _send(websocket, {
             "type": "transcript",
             "text": text.strip(),
@@ -151,7 +128,6 @@ async def _handle_audio_chunk(
             "total_words": session.word_count
         })
 
-        # step 5 — check if progressive summary is due
         if (session.minutes_since_last_summary >= 10
                 and session.word_count > 100):
             await _send_progressive_summary(websocket, session)
@@ -175,7 +151,6 @@ async def _handle_audio_chunk(
         })
 
     finally:
-        # always clean up temp wav file
         if wav_path:
             cleanup_chunk(wav_path)
 
@@ -185,18 +160,17 @@ async def _handle_text_message(
     session: MeetingSession,
     data: dict
 ):
-    """
-    Handles control messages from frontend:
-    - stop: user clicked stop recording
-    - generate_summary: user wants final summary
-    - question: user asking Q&A question
-    """
     message_type = data.get("type")
 
-    # ── Stop Recording ───────────────────────────────
     if message_type == "stop":
         session.is_recording = False
         logger.info(f"Session {session.session_id} stopped by user")
+
+        # ── RAG: drain queue before summary ───────────────────────────────
+        # pipeline.stop() is blocking (queue.join())
+        # run in executor so we don't block the event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, session.pipeline.stop)
 
         await _send(websocket, {
             "type": "status",
@@ -205,11 +179,12 @@ async def _handle_text_message(
             "total_chunks": session.chunk_count
         })
 
-    # ── Generate Final Summary ───────────────────────
+        # auto generate final summary on stop
+        await _send_final_summary(websocket, session)
+
     elif message_type == "generate_summary":
         await _send_final_summary(websocket, session)
 
-    # ── Q&A Question ─────────────────────────────────
     elif message_type == "question":
         question = data.get("text", "").strip()
         if question:
@@ -228,7 +203,6 @@ async def _send_progressive_summary(
     websocket: WebSocket,
     session: MeetingSession
 ):
-    """Generates and sends a progressive summary mid-meeting."""
     logger.info(f"Generating progressive summary for session {session.session_id}")
 
     try:
@@ -244,15 +218,12 @@ async def _send_progressive_summary(
 
     except SummaryGenerationException as e:
         logger.error(f"Progressive summary failed: {e}")
-        # non critical — don't send error to user
-        # meeting continues normally
 
 
 async def _send_final_summary(
     websocket: WebSocket,
     session: MeetingSession
 ):
-    """Generates and sends the final structured summary."""
     logger.info(f"Generating final summary for session {session.session_id}")
 
     if session.word_count < 50:
@@ -263,7 +234,6 @@ async def _send_final_summary(
         })
         return
 
-    # notify frontend that summary is being generated
     await _send(websocket, {
         "type": "status",
         "message": "Generating final summary..."
@@ -300,25 +270,27 @@ async def _handle_question(
     question: str
 ):
     """
-    Handles Q&A questions about the meeting transcript.
-    RAG pipeline will be plugged in here in next step.
-    For now returns a placeholder.
+    RAG + LangGraph agent answers questions.
+    Works during ongoing recording and after stop.
     """
     logger.info(f"Question received: '{question}'")
 
-    # placeholder — RAG pipeline plugged in next step
+    await _send(websocket, {
+        "type": "status",
+        "message": "Searching transcript..."
+    })
+
+    # ── RAG: agent searches transcript + web if needed ─────────────────────
+    answer = await run_agent(question, session.vector_store)
+
     await _send(websocket, {
         "type": "qa_answer",
         "question": question,
-        "text": "RAG pipeline coming soon",
+        "text": answer
     })
 
 
 async def _send(websocket: WebSocket, data: dict):
-    """
-    Helper to send JSON messages to frontend.
-    Single place to handle send errors.
-    """
     try:
         await websocket.send_json(data)
     except Exception as e:
