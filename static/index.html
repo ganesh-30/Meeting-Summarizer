@@ -150,6 +150,7 @@
 
         /* ── Controls bar ── */
         .controls {
+
             display: flex;
             align-items: center;
             gap: 12px;
@@ -649,6 +650,21 @@
         }
 
         .timer.active { color: var(--danger); }
+        .source-select {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-family: 'DM Sans', sans-serif;
+            font-size: 13px;
+            color: var(--text);
+            cursor: pointer;
+            outline: none;
+        }
+
+        .source-select:focus {
+            border-color: var(--accent);
+        }
     </style>
 </head>
 <body>
@@ -682,6 +698,12 @@
         <button class="btn btn-primary" id="btn-start" onclick="startRecording()">
             ● Start Recording
         </button>
+        <select id="audio-source" class="source-select">
+        <option value="mic">🎤 Mic Only</option>
+        <option value="tab">🔊 Tab Audio Only</option>
+        <option value="both" selected>🎤+🔊 Mic + Tab (Recommended)</option>
+        </select>
+
         <button class="btn btn-danger" id="btn-stop" onclick="stopRecording()" disabled>
             ■ Stop Recording
         </button>
@@ -951,9 +973,26 @@
 
     // ── Start recording ───────────────────────────────────
     async function startRecording() {
+        if (isRecording) {
+            toast('Already recording', 'error');
+            return;
+        }
+
+        // close any existing connection
+        if (ws) { ws.close(); ws = null; }
+
+        const source = document.getElementById('audio-source').value;
         sessionId = generateSessionId();
 
-        // connect WebSocket
+        // ── Step 1: get audio stream based on source ──────────────────────────
+        try {
+            stream = await _getAudioStream(source);
+        } catch (err) {
+            toast(`Audio access failed: ${err.message}`, 'error');
+            return;
+        }
+
+        // ── Step 2: connect WebSocket ─────────────────────────────────────────
         const wsUrl = `ws://localhost:8000/ws/audio?session_id=${sessionId}`;
         ws = new WebSocket(wsUrl);
 
@@ -981,23 +1020,14 @@
 
         ws.onerror = () => toast('WebSocket error', 'error');
 
-        // get mic
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        } catch (err) {
-            toast('Microphone access denied', 'error');
-            ws.close();
-            return;
-        }
-
-        // start MediaRecorder
+        // ── Step 3: setup MediaRecorder ───────────────────────────────────────
         const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
             ? 'audio/webm;codecs=opus'
             : 'audio/webm';
 
-        let headerChunk = null;
+        headerChunk = null;
 
-        mediaRecorder = new MediaRecorder(stream, { mimeType });  // use the variable
+        mediaRecorder = new MediaRecorder(stream, { mimeType });
 
         mediaRecorder.ondataavailable = async (event) => {
             if (event.data.size === 0) return;
@@ -1017,48 +1047,163 @@
         };
 
         mediaRecorder.start(15000);
-
         isRecording = true;
         startTimer();
 
-        // update UI
+        // ── Step 4: update UI ─────────────────────────────────────────────────
         document.getElementById('btn-start').disabled = true;
         document.getElementById('btn-stop').disabled = false;
         document.getElementById('btn-summary').disabled = true;
-        document.getElementById('qa-input').disabled = false;
-        document.getElementById('qa-send').disabled = false;
+        document.getElementById('audio-source').disabled = true;
         document.getElementById('wave').classList.add('active');
+        document.getElementById('qa-input').disabled = false;   // enable on start
+        document.getElementById('qa-send').disabled = false;
         setStatus('recording', 'Recording');
 
-        toast('Recording started', 'success');
+        const sourceLabel = {
+            mic: 'Mic only',
+            tab: 'Tab audio',
+            both: 'Mic + Tab'
+        }[source];
+        toast(`Recording started — ${sourceLabel}`, 'success');
+    }
+
+
+    async function _getAudioStream(source) {
+        /**
+         * Returns a MediaStream based on selected source.
+         *
+         * mic:  getUserMedia — microphone only
+         * tab:  getDisplayMedia — tab audio only (video track discarded)
+         * both: getUserMedia + getDisplayMedia mixed via Web Audio API
+         */
+
+        if (source === 'mic') {
+            // existing behaviour — unchanged
+            return await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+
+        if (source === 'tab') {
+            // getDisplayMedia captures tab audio
+            // user sees "Share tab" prompt — must check "Share tab audio"
+            const tabStream = await navigator.mediaDevices.getDisplayMedia({
+                video: true,   // must request video=true or Chrome rejects
+                audio: {
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    sampleRate: 16000
+                }
+            });
+
+            // discard video track — we only want audio
+            tabStream.getVideoTracks().forEach(t => t.stop());
+
+            if (tabStream.getAudioTracks().length === 0) {
+                throw new Error(
+                    'No tab audio captured. ' +
+                    'Make sure to check "Share tab audio" in the share dialog.'
+                );
+            }
+
+            return tabStream;
+        }
+
+        if (source === 'both') {
+            // get mic and tab streams simultaneously
+            const [micStream, tabStream] = await Promise.all([
+                navigator.mediaDevices.getUserMedia({ audio: true }),
+                navigator.mediaDevices.getDisplayMedia({
+                    video: true,
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        sampleRate: 16000
+                    }
+                })
+            ]);
+
+            // discard video
+            tabStream.getVideoTracks().forEach(t => t.stop());
+
+            if (tabStream.getAudioTracks().length === 0) {
+                // tab audio not shared — fall back to mic only
+                toast('Tab audio not shared — falling back to mic only', 'info');
+                return micStream;
+            }
+
+            // mix mic + tab using Web Audio API
+            const audioContext = new AudioContext();
+            const destination = audioContext.createMediaStreamDestination();
+
+            // connect mic to destination
+            const micSource = audioContext.createMediaStreamSource(micStream);
+            micSource.connect(destination);
+
+            // connect tab audio to destination
+            const tabSource = audioContext.createMediaStreamSource(tabStream);
+            tabSource.connect(destination);
+
+            // store references for cleanup on stop
+            // attach to window so stopRecording can access them
+            window._audioContext = audioContext;
+            window._micStream = micStream;
+            window._tabStream = tabStream;
+
+            // destination.stream is the mixed audio
+            return destination.stream;
+        }
     }
 
     // ── Stop recording ────────────────────────────────────
     function stopRecording() {
+        if (!isRecording) return;
+
+        isRecording = false;
         headerChunk = null;
+
+        // cleanup Web Audio API resources if mix mode was used
+        if (window._audioContext) {
+            window._audioContext.close();
+            window._audioContext = null;
+        }
+        if (window._micStream) {
+            window._micStream.getTracks().forEach(t => t.stop());
+            window._micStream = null;
+        }
+        if (window._tabStream) {
+            window._tabStream.getTracks().forEach(t => t.stop());
+            window._tabStream = null;
+        }
+
+        // stop main stream
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             mediaRecorder.stop();
         }
-        if (stream) {
-            stream.getTracks().forEach(t => t.stop());
-        }
 
-        // tell backend we stopped
+        setTimeout(() => {
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+        }, 500);
+
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'stop' }));
         }
 
-        isRecording = false;
         stopTimer();
 
-        // update UI
         document.getElementById('btn-start').disabled = false;
         document.getElementById('btn-stop').disabled = true;
         document.getElementById('btn-summary').disabled = false;
+        document.getElementById('audio-source').disabled = false;
         document.getElementById('wave').classList.remove('active');
         setStatus('connected', 'Stopped');
 
-        toast('Recording stopped — click Generate Summary', 'info', 4000);
+        document.getElementById('qa-input').disabled = false;   // enable on start
+        document.getElementById('qa-send').disabled = false;
+
+        toast('Recording stopped', 'info', 4000);
     }
 
     // ── Generate summary ──────────────────────────────────

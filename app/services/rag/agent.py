@@ -37,7 +37,7 @@ def _build_graph(store: MeetingVectorStore):
 
     llm = ChatOpenAI(
     model="gpt-4o",
-    temperature=0,
+    temperature=0.3,
     api_key=os.getenv("GITHUB_TOKEN"), 
     base_url="https://models.inference.ai.azure.com"
     ).bind_tools(tools)
