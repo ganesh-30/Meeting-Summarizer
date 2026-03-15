@@ -208,3 +208,11 @@ __marimo__/
 uploads/
 test_groq.py
 test_key.py
+token.json
+package.json
+package-lock.json
+generate_token_for_json.js
+credentials.json
+credentials_with_token.json
+service_account.json
+node_modules

@@ -1,5 +1,5 @@
 import threading
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_community.embeddings import FastEmbedEmbeddings
 from app.utils.logger import get_logger
 

@@ -8,8 +8,9 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import tools_condition, ToolNode
 from app.services.rag.store import MeetingVectorStore
-from app.services.rag.tools import create_tools
+from app.services.rag.tools import create_tools , _get_mcp_tools
 from app.core.config import settings
+from datetime import datetime
 from app.utils.logger import get_logger
 from dotenv import load_dotenv
 
@@ -17,22 +18,30 @@ load_dotenv()
 
 logger = get_logger(__name__)
 
-SYSTEM_PROMPT = """You are an intelligent meeting assistant.
+def get_system_prompt():
+    today = datetime.now().strftime("%A, %B %d, %Y")
+    return f"""You are an intelligent meeting assistant.
+    Today's date is {today}. Use this for any date calculations like "upcoming Sunday", "next Monday", etc.
 
-Tool selection:
-- search_transcript - anything about meeting content
-- search_web   -      external facts not in the meeting
+    Tool selection:
+    - search_transcript — anything about meeting content
+    - web_search — external facts not in the meeting
+    - create_event — create a Google Calendar event
+    - list_events — list Google Calendar events
+    - update_event — update an existing calendar event
+    - delete_event — delete a calendar event
 
-Always use search_transcript first for meeting questions.
-Be concise. Base answers only on tool results."""
+    Always use search_transcript first for meeting questions.
+    For calendar operations, calculate exact dates based on today's date.
+    Be concise. Base answers only on tool results."""
 
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
-
-def _build_graph(store: MeetingVectorStore):
+def _build_graph(store: MeetingVectorStore, mcp_tools: list = None):
     tools = create_tools(store)
+    tools.extend(mcp_tools)  # Add MCP tools to the list
     tool_node = ToolNode(tools)
 
     llm = ChatOpenAI(
@@ -56,27 +65,28 @@ def _build_graph(store: MeetingVectorStore):
 
 
 async def run_agent(question: str, store: MeetingVectorStore) -> str:
-    def _run():
-        agent = _build_graph(store)
-        result = agent.invoke(
+    try:
+        if not hasattr(store, '_agent'):
+            mcp_tools = await _get_mcp_tools()
+            store._agent = _build_graph(store, mcp_tools)
+
+        # ainvoke — required because MCP tools are async-only
+        result = await store._agent.ainvoke(
             {
                 "messages": [
-                    SystemMessage(content=SYSTEM_PROMPT),
+                    SystemMessage(content=get_system_prompt()),
                     HumanMessage(content=question)
                 ]
             },
             config={"recursion_limit": 10}
         )
+
         for msg in reversed(result["messages"]):
             if isinstance(msg, AIMessage) and msg.content:
                 return msg.content
-        return "Could not generate an answer. Please try again."
 
-    loop = asyncio.get_event_loop()
-    try:
-        answer = await loop.run_in_executor(None, _run)
-        logger.info(f"Agent answered: '{question[:50]}'")
-        return answer
+        return "Could not generate an answer."
+
     except Exception as e:
         logger.error(f"Agent error: {e}")
         return "Agent error. Please try again."

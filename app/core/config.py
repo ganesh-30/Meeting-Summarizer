@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     TRANSCRIPT_FOLDER: str = str(ROOT_DIR / "data" / "transcripts")
     LOG_FOLDER: str = str(ROOT_DIR / "logs")
     STATIC_FOLDER: str = str(ROOT_DIR / "static")
+    MCP_CONFIG_FILE: str = os.getenv("MCP_CONFIG_FILE", r"C:\Users\Lenovo\meeting-summarizer\app\services\rag\mcp_server_file.json")
+    
 
     # ── Audio Settings ────────────────────────────────────
     CHUNK_DURATION_MS: int = 5000       # how often browser sends audio chunk
