@@ -1,114 +1,20 @@
-# # Core dependencies
-# # openai-whisper
-# faster-whisper
-# openai
-# python-dotenv
-# pydub
-# numpy
-# torch
-# # tqdm
-# # PyPDF2
-# # pdfminer.six
-
-# # NLP processing
-# # nltk
-# # spacy
-# # transformers
-# # sentence-transformers
-# # pyannote.audio
-# #pytube  # for YouTube audio extraction
-
-# # Data handling
-# pandas
-# python-json-logger
-
-# # API/Web
-# fastapi
-# uvicorn
-# python-multipart
-# # flask
-# werkzeug
-# reportlab
-
-# # LangChain Core
-
-# Langchain
-
-# langchain-core
-# langchain-community
-# langchain-text-splitters
-
-# #OpenAI Integration
-
-langchain-openai
-
-# openai
-
-# # Anthropic Integration
-
-# # langchain-anthropic
-
-# #Google Gemini (PaLM) Integration
-
-# # langchain-google-genai
-
-# # google-generativeai
-
-# # Hugging Face Integration
-
-# langchain-huggingface
-
-# transformers
-
-# huggingface-hub
-
-# # Environment Variable Management
-
-# python-dotenv
-
-# #Machine Learning Utilities
-
-# numpy
-
-# # scikit-learn
-# -e .
-
-
-# Web Framework
+-e .
 fastapi
-uvicorn
-python-multipart
-werkzeug
-
-# Audio Processing
-faster-whisper
-# pydub
-numpy
-torch
-
-# LLM / Summary
+uvicorn[standard]
+websockets
+python-dotenv
+groq
 langchain
 langchain-core
 langchain-community
-langchain-text-splitters
-langchain-huggingface
-transformers
-huggingface-hub
-groq
-langchain-groq
-tiktoken
-
-# PDF (keeping since your existing app uses it)
-reportlab
-pdfminer.six
-PyPDF2
-pyaudioop
-# Utilities
-python-dotenv
-python-json-logger
-pandas
-
-# Environment
--e .
-chromadb 
-sentence-transformers
+langchain-chroma
+langchain-openai
+langgraph
+fastembed
+chromadb
+langchain-mcp-adapters
+tavily-python
+google-auth
+google-auth-oauthlib
+google-api-python-client
+httpx

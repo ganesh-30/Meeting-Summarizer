@@ -1,236 +1,306 @@
-# Meeting Summarizer
+# MeetingAI — Real-Time Intelligent Meeting Assistant
 
-An AI-powered web application that turns meeting recordings, audio, video, or PDF transcripts into concise summaries. Upload your content, get a transcript (or use existing text), and download a professional PDF summary.
+An AI-powered web application that captures live meeting audio, transcribes speech in real time, indexes the transcript for semantic search, and runs an intelligent agent that can answer questions about your meeting, search the web, and manage your Google Calendar — all from a single browser tab.
 
 ---
 
 ## What This Project Does
 
-- **Audio/Video → Summary**: Upload audio (MP3, WAV, etc.) or video (MP4, MOV, etc.). The app transcribes speech with Whisper, generates a summary with LLMs, and produces a downloadable PDF.
-- **PDF Transcript → Summary**: Upload a PDF transcript. The app extracts text, generates a summary, and outputs a PDF summary—no transcription step.
-- **Live Recording**: Record audio in the browser, then upload it for the same pipeline (transcribe → summarize → PDF).
-- **Session Cleanup**: Uploaded files, transcripts, and generated PDFs are tied to a session and can be cleaned up when the user leaves or when a new file is uploaded.
+- **Live Transcription**: Captures microphone audio, tab audio, or both simultaneously. Streams audio chunks to the server every 15 seconds, transcribes with Groq Whisper `large-v3`, and displays results in real time.
+- **Semantic Q&A**: Ask anything about the meeting in natural language. A LangGraph ReAct agent searches the live transcript using vector similarity and returns grounded answers.
+- **Calendar Integration**: Ask the agent to create, list, or update Google Calendar events. Commands like *"Schedule a follow-up for Sunday at 3pm"* are handled end-to-end.
+- **Web Search**: When the answer isn't in the transcript, the agent searches the web via Tavily and returns current information.
+- **Auto Summarization**: Generates a final meeting summary when recording stops. For sessions longer than 10 minutes, progressive summaries are generated automatically using a MapReduce strategy for long transcripts.
 
 ---
 
 ## Features
 
-- **Multiple input types**: Audio files, video files, PDF transcripts, or live microphone recording
-- **Automatic transcription**: OpenAI Whisper for speech-to-text (audio/video)
-- **PDF text extraction**: pdfminer.six + PyPDF2 for transcript PDFs
-- **AI summarization**: LangChain + Hugging Face models (chunk-based, then combined summary)
-- **PDF export**: ReportLab-generated summary PDFs with styling
-- **Session-based flow**: Unique session IDs, download links, and cleanup on navigation/failure
-- **Responsive UI**: Single-page app with tabs for file upload vs. record, drag-and-drop, and status feedback
+- Real-time WebSocket audio streaming from the browser
+- Multi-source audio capture — mic only, tab audio, or mic + tab mixed via Web Audio API
+- Per-session in-memory ChromaDB vector store — no cross-session data leakage
+- LangGraph ReAct agent with `ToolNode` and `tools_condition` — proper tool-call loop, not a single-shot chain
+- MCP (Model Context Protocol) calendar server — extensible to Gmail, Drive, and other tools
+- MapReduce summarization strategy for long meetings
+- Clean, responsive UI with live transcript scroll, Q&A chat interface, and transcript keyword filter
 
 ---
 
 ## Tech Stack
 
 | Layer | Technology |
-|-------|------------|
-| **Backend** | Python 3, Flask |
-| **Transcription** | OpenAI Whisper (medium model) |
-| **PDF text extraction** | pdfminer.six, PyPDF2 |
-| **Summarization** | LangChain, Hugging Face (Qwen, Meta-Llama), langchain-text-splitters |
-| **PDF generation** | ReportLab |
-| **Frontend** | HTML5, CSS3, Vanilla JavaScript (no framework) |
-| **File handling** | Werkzeug (secure uploads), uuid (session IDs) |
-
-### Key Dependencies
-
-- **openai-whisper** – speech-to-text (audio/video)
-- **flask**, **werkzeug** – web server and upload handling
-- **langchain-core**, **langchain-community**, **langchain-text-splitters**, **langchain-huggingface** – summarization pipeline
-- **reportlab** – PDF creation
-- **PyPDF2**, **pdfminer.six** – PDF text extraction
-- **python-dotenv** – environment variables (e.g. Hugging Face API)
+|---|---|
+| **Transcription** | Groq Whisper `large-v3` |
+| **Embeddings** | FastEmbed `BAAI/bge-small-en-v1.5` (local ONNX — no API call) |
+| **Vector Store** | LangChain Chroma (in-memory, per session) |
+| **Agent Framework** | LangGraph ReAct with `ToolNode` + `tools_condition` |
+| **Agent LLM** | GPT-4o via GitHub Models (Azure inference endpoint) |
+| **Summary LLM** | Groq `llama-3.3-70b-versatile` |
+| **Web Search** | Tavily |
+| **Calendar** | MCP server (`@cablate/mcp-google-calendar`) + Google Service Account |
+| **Backend** | FastAPI + WebSocket + Uvicorn |
+| **Audio Processing** | ffmpeg (WebM → WAV), Web Audio API |
+| **Frontend** | Vanilla JS + CSS — no framework |
 
 ---
 
 ## Architecture
 
-### High-Level Flow
-
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Frontend (Browser)                              │
-│  • Upload: audio / video / PDF  OR  Record → Upload                          │
-│  • POST /upload-audio (multipart) → Poll / status → GET /download-pdf         │
-│  • DELETE/POST /cleanup/<session_id> on leave or new upload                    │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Flask App (main.py)                              │
-│  • Save file to uploads/ (unique name: session_id + filename)                │
-│  • Branch by type: PDF → pdf_extractor | Audio/Video → transcribe             │
-│  • summary_generator(transcript_path) → summary text                          │
-│  • pdf_generator(summary_text) → output/<name>_summary.pdf                     │
-│  • Store paths in session_files[session_id]                                    │
-│  • On error: delete uploaded file, transcript, and PDF                        │
-└─────────────────────────────────────────────────────────────────────────────┘
-                    │                           │
-                    ▼                           ▼
-┌──────────────────────────────┐   ┌──────────────────────────────┐
-│  transcribe.py (Whisper)      │   │  pdf_extractor.py             │
-│  • Audio/Video → .txt          │   │  • PDF → .txt (transcript)    │
-│  • data/transcripts/          │   │  • data/transcripts/           │
-└──────────────────────────────┘   └──────────────────────────────┘
-                    │                           │
-                    └─────────────┬─────────────┘
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  summary_generator.py                                                        │
-│  • Load transcript .txt → chunk (RecursiveCharacterTextSplitter)             │
-│  • Per-chunk summary (Meta-Llama-3-8B) → combine (Qwen) → single summary     │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  pdf_generator.py                                                             │
-│  • summary text → ReportLab SimpleDocTemplate → output/*.pdf                 │
-└─────────────────────────────────────────────────────────────────────────────┘
+Browser (MediaRecorder API)
+        │
+        │  WebM/Opus audio chunks over WebSocket
+        ▼
+FastAPI WebSocket Server  (app/api/audio.py)
+        │
+        ├── ffmpeg ──────────────────────► WebM → WAV conversion
+        │
+        ├── Groq Whisper large-v3 ───────► Real-time transcription
+        │
+        ├── TranscriptIngestionPipeline  (background thread queue)
+        │       └── Sentence splitter
+        │               └── FastEmbed embeddings
+        │                       └── ChromaDB  (in-memory, per session)
+        │
+        ├── LangGraph ReAct Agent  ──────► On every Q&A request
+        │       ├── search_transcript    ► ChromaDB cosine similarity search
+        │       ├── web_search           ► Tavily
+        │       └── MCP Calendar Tools   ► create_event / list_events / update_event / delete_event
+        │                                        └── Google Calendar API (Service Account)
+        │
+        └── Groq LLM ───────────────────► Final summary + progressive summaries
 ```
 
-### Directory Layout
+---
+
+## Project Structure
 
 ```
 meeting-summarizer/
-├── main.py              # Flask app: routes, upload, download, cleanup
-├── transcribe.py        # Whisper: audio/video → transcript .txt
-├── pdf_extractor.py     # PDF → transcript .txt
-├── summary_generator.py # Transcript → LLM summary (LangChain + Hugging Face)
-├── pdf_generator.py     # Summary text → PDF
-├── backend.py           # (Optional) standalone summarization script
-├── requirements.txt
-├── .env                 # e.g. HUGGINGFACEHUB_API_TOKEN (create locally)
-├── templates/
-│   └── index.html       # Single-page UI (upload / record tabs)
+├── app/
+│   ├── api/
+│   │   ├── audio.py              # WebSocket handler, MeetingSession, audio pipeline
+│   │   └── upload.py             # File upload endpoints
+│   ├── core/
+│   │   └── config.py             # Settings — all config lives here
+│   ├── services/
+│   │   ├── audio_processor.py    # ffmpeg WebM → WAV conversion + cleanup
+│   │   ├── summary.py            # Groq LLM summarization (direct + MapReduce)
+│   │   ├── transcription.py      # Groq Whisper client
+│   │   └── rag/
+│   │       ├── __init__.py       # Public exports
+│   │       ├── agent.py          # LangGraph ReAct agent, run_agent()
+│   │       ├── ingestion.py      # Background queue worker, sentence splitter
+│   │       ├── retriever.py      # MeetingRetriever, RetrievalResult dataclass
+│   │       ├── store.py          # ChromaDB vectorstore (thread-safe wrapper)
+│   │       └── tools.py          # search_transcript, web_search, MCP tools loader
+│   └── main.py                   # FastAPI app, lifespan, static file serving
 ├── static/
-│   ├── app.js           # Upload, record, download, cleanup logic
-│   └── style.css        # Layout and styling
-├── uploads/             # Incoming files (created at runtime)
+│   ├── index.html                # UI structure
+│   ├── style.css                 # All styles
+│   └── app.js                    # WebSocket logic, audio capture, UI interactions
+├── uploads/                      # Temporary audio chunks (auto-cleaned per session)
+├── output/                       # Session transcripts and summaries
 ├── data/
-│   └── transcripts/     # Intermediate .txt transcripts
-└── output/              # Generated summary PDFs
+│   └── transcripts/              # Saved transcript text files
+├── logs/                         # Application logs
+├── mcp_server_file.json          # MCP server configuration
+├── service_account.json          # Google Service Account key (gitignored)
+├── .env                          # API keys (gitignored)
+├── .env.example                  # Template — copy this to .env
+└── requirements.txt
 ```
-
-### Data Flow by Input Type
-
-1. **Audio/Video**
-   - File → `uploads/` → `transcribe.transcribe_audio_file()` → `data/transcripts/<base>.txt` → `summary_generator.generate_summary()` → `pdf_generator.generate_pdf()` → `output/<name>_summary.pdf`.
-
-2. **PDF transcript**
-   - File → `uploads/` → `pdf_extractor.extract_text_from_pdf()` → `data/transcripts/<base>.txt` → same summary + PDF steps.
-
-3. **Live recording**
-   - Browser records → Blob uploaded as file → same as audio path.
 
 ---
 
 ## Prerequisites
 
-- **Python**: 3.9 or higher (recommended 3.10+)
-- **ffmpeg**: Required for Whisper to process audio/video (install on system path)
-- **Hugging Face**: Account and API token for Hugging Face models used in summarization
+- Python 3.11+
+- Node.js 18+ and `npx` (required for the MCP calendar server)
+- ffmpeg installed and available on `PATH`
+- Chrome or Edge (required for `MediaRecorder` with `audio/webm;codecs=opus`)
 
 ---
 
 ## Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd meeting-summarizer
-   ```
+**1. Clone the repository**
 
-2. **Create and activate a virtual environment**
-   ```bash
-   python -m venv venv
-   # Windows
-   venv\Scripts\activate
-   # Linux/macOS
-   source venv/bin/activate
-   ```
+```bash
+git clone https://github.com/yourusername/meeting-summarizer.git
+cd meeting-summarizer
+```
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+**2. Create and activate a virtual environment**
 
-4. **Environment variables**
-   - Create a `.env` file in the project root.
-   - Add your Hugging Face API token (used by `summary_generator.py`):
-     ```
-     HUGGINGFACEHUB_API_TOKEN=your_token_here
-     ```
+```bash
+python -m venv venv
 
-5. **ffmpeg**
-   - Install ffmpeg and ensure it is on your system PATH (required for Whisper with audio/video).
+# Windows
+venv\Scripts\activate
+
+# macOS / Linux
+source venv/bin/activate
+```
+
+**3. Install Python dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+**4. Set up environment variables**
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in your keys (see [Environment Variables](#environment-variables) below).
+
+**5. Set up Google Calendar** (optional — skip if not using calendar features)
+
+Follow the [Google Calendar Setup](#google-calendar-setup) section below.
+
+**6. Run the server**
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Open `http://localhost:8000` in your browser.
+
+---
+
+## Environment Variables
+
+Only the following four keys go in `.env`. All other configuration (folders, model names, debug mode) is managed in `app/core/config.py`.
+
+```env
+# Groq — transcription and summarization
+GROQ_API_KEY=gsk_your_groq_api_key
+
+# GitHub Models — GPT-4o agent LLM (via Azure inference endpoint)
+GITHUB_TOKEN=your_github_personal_access_token
+
+# Tavily — web search tool for the agent
+TAVILY_API_KEY=tvly_your_tavily_api_key
+
+# MCP server config — absolute path to mcp_server_file.json
+MCP_CONFIG_FILE=C:\Users\YourName\meeting-summarizer\mcp_server_file.json
+```
+
+To get these keys:
+- **Groq**: [console.groq.com](https://console.groq.com)
+- **GitHub Token**: [github.com/settings/tokens](https://github.com/settings/tokens) — enable Models access
+- **Tavily**: [app.tavily.com](https://app.tavily.com)
+
+---
+
+## Google Calendar Setup
+
+MeetingAI uses a **Google Service Account** for calendar access. This requires a one-time setup and works forever without browser login prompts.
+
+**1. Enable the Calendar API**
+
+Go to [console.cloud.google.com](https://console.cloud.google.com), select your project, and enable the **Google Calendar API**.
+
+**2. Create a Service Account**
+
+Navigate to **IAM & Admin → Service Accounts → Create Service Account**. After creation go to the **Keys** tab → **Add Key → Create new key → JSON**. Download the file and save it as `service_account.json` in the project root.
+
+**3. Share your calendar with the service account**
+
+Open [Google Calendar](https://calendar.google.com) → your calendar → **Settings and sharing** → **Share with specific people** → add the `client_email` from `service_account.json` with **Make changes to events** permission.
+
+```
 
 ---
 
 ## Usage
 
-1. **Start the server**
-   ```bash
-   python main.py
-   ```
-   The app runs at `http://127.0.0.1:5000` by default.
+**Starting a session**
 
-2. **Open in browser**
-   - Go to `http://127.0.0.1:5000`.
+1. Select your audio source — **Mic Only**, **Tab Audio**, or **Mic + Tab** (recommended for online meetings)
+2. Click **Start Recording**
+3. Speak naturally — transcript chunks appear every ~15 seconds
 
-3. **Upload or record**
-   - **File upload**: Choose “File upload”, then drag-and-drop or select an audio file, video file, or PDF transcript.
-   - **Record**: Choose “Record audio”, allow microphone access, record, then click “Upload”.
+**Asking questions**
 
-4. **Wait for processing**
-   - The server transcribes (or extracts text from PDF), then generates the summary and PDF. This may take a minute or more for large files.
+The Q&A panel is available at any time during or after recording:
 
-5. **Download**
-   - When done, a “Download PDF” link appears. Use it to download the summary PDF.
+| Example prompt | What happens |
+|---|---|
+| *"What decisions were made?"* | Searches transcript via vector similarity |
+| *"What did we say about the deadline?"* | Returns matching transcript segments |
+| *"Schedule a follow-up for Sunday at 3pm"* | Creates event in Google Calendar |
+| *"List my events this week"* | Fetches from Google Calendar |
+| *"What is LangGraph?"* | Web search via Tavily |
 
-6. **Cleanup**
-   - Closing the tab or navigating away triggers cleanup for that session. Uploading a new file cleans up the previous session’s files.
+**Generating a summary**
+
+Click **Summarise** after stopping the recording, or let the app auto-generate one. Sessions longer than 10 minutes get progressive summaries automatically.
 
 ---
 
-## API Endpoints
+## Summarization Strategy
+
+| Transcript length | Strategy |
+|---|---|
+| Short (< 2,000 tokens) | Single direct LLM call |
+| Medium (2,000 – 6,000 tokens) | Direct with token-aware context window management |
+| Long (> 6,000 tokens) | MapReduce — chunk → summarize each chunk → reduce all chunk summaries into one |
+
+---
+
+## API Reference
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/` | Serves the main UI (`index.html`) |
-| POST | `/upload-audio` | Upload file (audio/video/PDF). Form field: `audio_file`. Returns `session_id`, `pdf_filename` on success. |
-| GET | `/download-pdf/<session_id>` | Download the generated summary PDF for the session. |
-| DELETE or POST | `/cleanup/<session_id>` | Delete uploaded file, transcript, and output PDF for the session. |
-| GET | `/status/<session_id>` | Check if processing completed and get `pdf_filename`. |
+|---|---|---|
+| `GET` | `/` | Serves the main UI |
+| `WebSocket` | `/ws/audio?session_id=<id>` | Audio stream, transcription, Q&A, summary |
+| `POST` | `/api/upload` | File upload endpoint |
+
+**WebSocket — client → server**
+
+| Type | Payload | Description |
+|---|---|---|
+| Binary | `ArrayBuffer` | Raw audio chunk |
+| `stop` | `{}` | Stop recording, trigger final summary |
+| `question` | `{ text: string }` | Send a Q&A question |
+| `generate_summary` | `{}` | Manually request summary generation |
+
+**WebSocket — server → client**
+
+| Type | Description |
+|---|---|
+| `transcript` | New transcribed chunk with chunk ID and word count |
+| `qa_answer` | Agent response to a question |
+| `final_summary` | Complete summary after session ends |
+| `progressive_summary` | Auto-generated mid-session summary |
+| `error` | Error message |
 
 ---
 
-## Supported File Types
+## Known Limitations
 
-- **Audio**: `.mp3`, `.wav`, `.m4a`, `.flac`, `.aac`, `.ogg`, `.wma`
-- **Video**: `.mp4`, `.avi`, `.mov`, `.mkv`, `.webm`, `.flv`, `.wmv`, `.m4v`, `.3gp`
-- **Transcript**: `.pdf` (text is extracted; no transcription)
-
----
-
-## Configuration
-
-- **Folders**: `UPLOAD_FOLDER` (`uploads/`), `OUTPUT_FOLDER` (`output/`), and `TRANSCRIPT_FOLDER` (`data/transcripts/`) are set in `main.py`. Folders are created automatically if missing.
-- **Whisper model**: In `transcribe.py`, the default model is `medium`. You can change it to `base`, `small`, `large`, or `large-v2` for different speed/quality tradeoffs.
-- **Summarization models**: In `summary_generator.py`, chunk summarization uses Meta-Llama-3-8B and final combination uses Qwen. These require a valid `HUGGINGFACEHUB_API_TOKEN` and model access on Hugging Face.
+- **Session memory** — the vector store is in-memory and lost when the session ends. Transcripts are saved to `output/` but are not re-indexed on reload.
+- **Single user calendar** — the Google Calendar integration uses a service account tied to one shared calendar. Multi-user OAuth is not yet implemented.
+- **Browser support** — Chrome and Edge are fully supported. Safari has limited `MediaRecorder` support.
+- **MCP cold start** — the first calendar question per session takes 5–8 seconds while the MCP server process spawns. Subsequent questions in the same session are fast.
 
 ---
 
 ## License
 
-See the `LICENSE` file in the project root.
+MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
-## Summary
+## Acknowledgements
 
-Meeting Summarizer is a full-stack app that accepts audio, video, or PDF transcripts, produces a text transcript (via Whisper or PDF extraction), runs an LLM-based summarization pipeline, and delivers a PDF summary. The README above describes what it does, the tech stack, architecture, project structure, installation, usage, API, and supported formats so others can run and extend the project.
+- [Groq](https://groq.com) — fast Whisper and LLM inference
+- [LangGraph](https://github.com/langchain-ai/langgraph) — agent framework
+- [ChromaDB](https://www.trychroma.com) — vector store
+- [FastEmbed](https://github.com/qdrant/fastembed) — local ONNX embeddings
+- [Model Context Protocol](https://modelcontextprotocol.io) — calendar integration pattern
+- [Tavily](https://tavily.com) — web search API
