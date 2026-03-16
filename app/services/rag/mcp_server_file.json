@@ -4,7 +4,7 @@
     "args": ["-y", "@cablate/mcp-google-calendar"],
     "transport": "stdio",
     "env": {
-      "GOOGLE_CALENDAR_ID": "your_calendar_id_here",
+      "GOOGLE_CALENDAR_ID": "your calendar id",
       "GOOGLE_TIME_ZONE": "Asia/Kolkata",
       "GOOGLE_CREDENTIALS_PATH": "C:\\Users\\Lenovo\\meeting-summarizer\\service_account.json"
     }

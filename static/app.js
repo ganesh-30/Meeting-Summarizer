@@ -1,479 +1,489 @@
-// document.addEventListener("DOMContentLoaded", () => {
-//   // --- Prevent Horizontal Scrolling ---
-//   let lastScrollTop = 0;
-//   let ticking = false;
+// ── State ────────────────────────────────────────────
+let ws = null;
+let mediaRecorder = null;
+let stream = null;
+let sessionId = null;
+let isRecording = false;
+let chunkCount = 0;
+let wordCount = 0;
+let timerInterval = null;
+let timerSeconds = 0;
+let transcriptChunks = [];
+let headerChunk = null;
+let autoScroll = true;
 
-//   function preventHorizontalScroll() {
-//     if (window.innerWidth !== document.documentElement.clientWidth) {
-//       document.body.style.overflowX = 'hidden';
-//       document.documentElement.style.overflowX = 'hidden';
-//     }
-//   }
+// ── Session ID ───────────────────────────────────────
+function generateSessionId() {
+    return 'sess_' + Math.random().toString(36).substr(2, 9);
+}
 
-//   window.addEventListener('resize', preventHorizontalScroll);
-//   preventHorizontalScroll();
+// ── Timer ────────────────────────────────────────────
+function startTimer() {
+    timerSeconds = 0;
+    timerInterval = setInterval(() => {
+        timerSeconds++;
+        const m = String(Math.floor(timerSeconds / 60)).padStart(2, '0');
+        const s = String(timerSeconds % 60).padStart(2, '0');
+        document.getElementById('timer').textContent = `${m}:${s}`;
+    }, 1000);
+    document.getElementById('timer').classList.add('active');
+}
 
-//   // --- Navbar Scroll Effect ---
-//   const navbar = document.querySelector('.navbar');
-//   let lastScroll = 0;
+function stopTimer() {
+    clearInterval(timerInterval);
+    document.getElementById('timer').classList.remove('active');
+}
 
-//   function handleNavbarScroll() {
-//     const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-    
-//     if (scrollTop > 50) {
-//       navbar.classList.add('scrolled');
-//     } else {
-//       navbar.classList.remove('scrolled');
-//     }
-    
-//     lastScroll = scrollTop;
-//     ticking = false;
-//   }
+// ── Status badge ─────────────────────────────────────
+function setStatus(state, text) {
+    const badge = document.getElementById('status-badge');
+    badge.className = 'status-badge ' + state;
+    document.getElementById('status-text').textContent = text;
+}
 
-//   window.addEventListener('scroll', () => {
-//     if (!ticking) {
-//       window.requestAnimationFrame(handleNavbarScroll);
-//       ticking = true;
-//     }
-//   });
+// ── Toast notifications ───────────────────────────────
+function toast(message, type = 'info', duration = 3000) {
+    const container = document.getElementById('toasts');
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    const icons = { error: '✕', success: '✓', info: 'i' };
+    el.innerHTML = `<div class="toast-icon">${icons[type] || 'i'}</div><span>${message}</span>`;
+    container.appendChild(el);
+    setTimeout(() => {
+        el.style.transition = 'opacity 0.3s, transform 0.3s';
+        el.style.opacity = '0';
+        el.style.transform = 'translateX(10px)';
+        setTimeout(() => el.remove(), 300);
+    }, duration);
+}
 
-//   // --- Navbar Toggle Functionality ---
-//   const navbarToggle = document.getElementById("navbarToggle");
-//   const navbarMenu = document.getElementById("navbarMenu");
+// ── WebSocket message handler ─────────────────────────
+function handleMessage(data) {
+    switch (data.type) {
+        case 'status':
+            toast(data.message, 'info');
+            break;
 
-//   if (navbarToggle && navbarMenu) {
-//     navbarToggle.addEventListener("click", (e) => {
-//       e.stopPropagation();
-//       navbarMenu.classList.toggle("active");
-//       navbarToggle.classList.toggle("active");
-      
-//       // Prevent body scroll when menu is open
-//       if (navbarMenu.classList.contains("active")) {
-//         document.body.style.overflow = 'hidden';
-//       } else {
-//         document.body.style.overflow = '';
-//       }
-//     });
+        case 'transcript':
+            appendTranscript(data.text, data.chunk_id);
+            wordCount = data.total_words || wordCount + data.text.split(' ').length;
+            chunkCount = data.chunk_id || chunkCount + 1;
+            updateStats();
+            break;
 
-//     // Close menu when clicking outside
-//     document.addEventListener("click", (e) => {
-//       if (!navbarToggle.contains(e.target) && !navbarMenu.contains(e.target)) {
-//         navbarMenu.classList.remove("active");
-//         navbarToggle.classList.remove("active");
-//         document.body.style.overflow = '';
-//       }
-//     });
+        case 'progressive_summary':
+            renderProgressiveSummary(data.text);
+            break;
 
-//     // Close menu when clicking on a link
-//     const navbarLinks = navbarMenu.querySelectorAll("a");
-//     navbarLinks.forEach((link) => {
-//       link.addEventListener("click", (e) => {
-//         e.preventDefault();
-//         navbarMenu.classList.remove("active");
-//         navbarToggle.classList.remove("active");
-//         document.body.style.overflow = '';
-        
-//         // Smooth scroll to section if anchor exists
-//         const targetId = link.getAttribute('href');
-//         if (targetId && targetId.startsWith('#')) {
-//           const targetElement = document.querySelector(targetId);
-//           if (targetElement) {
-//             const offsetTop = targetElement.offsetTop - 70;
-//             window.scrollTo({
-//               top: offsetTop,
-//               behavior: 'smooth'
-//             });
-//           }
-//         }
-//       });
-//     });
-//   }
+        case 'final_summary':
+            renderFinalSummary(data.text, data);
+            break;
 
-//   // --- Tab Management ---
-//   const fileUploadTab = document.getElementById("fileUploadTab");
-//   const recordAudioTab = document.getElementById("recordAudioTab");
-//   const uploadTabContent = document.getElementById("uploadTabContent");
-//   const recordTabContent = document.getElementById("recordTabContent");
+        case 'qa_answer':
+            renderQAAnswer(data.text, data.question);
+            break;
 
-//   function switchTab(tabName) {
-//     // Remove active class from all tabs and content
-//     fileUploadTab.classList.remove("active");
-//     recordAudioTab.classList.remove("active");
-//     uploadTabContent.classList.remove("active");
-//     recordTabContent.classList.remove("active");
+        case 'error':
+            toast(data.message, 'error');
+            console.error('Backend error:', data);
+            break;
+    }
+}
 
-//     // Add active class to selected tab and content
-//     if (tabName === "upload") {
-//       fileUploadTab.classList.add("active");
-//       uploadTabContent.classList.add("active");
-//     } else {
-//       recordAudioTab.classList.add("active");
-//       recordTabContent.classList.add("active");
-//     }
-//   }
+// ── Transcript rendering ──────────────────────────────
+function appendTranscript(text, chunkId) {
+    const content = document.getElementById('transcript-content');
 
-//   fileUploadTab.addEventListener("click", () => switchTab("upload"));
-//   recordAudioTab.addEventListener("click", () => switchTab("record"));
+    // remove empty state
+    const empty = content.querySelector('.transcript-empty');
+    if (empty) empty.remove();
 
-//   // --- References to HTML elements for Recording States ---
-//   const idleState = document.getElementById("idleState");
-//   const recordingState = document.getElementById("recordingState");
-//   const previewState = document.getElementById("previewState");
-  
-//   const startButton = document.getElementById("startButton");
-//   const pauseResumeButton = document.getElementById("pauseResumeButton");
-//   const pauseResumeIcon = document.getElementById("pauseResumeIcon");
-//   const pauseResumeText = document.getElementById("pauseResumeText");
-//   const stopButton = document.getElementById("stopButton");
-  
-//   const recordStatus = document.getElementById("recordStatus");
-//   const recordingStatus = document.getElementById("recordingStatus");
-//   const previewStatus = document.getElementById("previewStatus");
-  
-//   const audioPreview = document.getElementById("audioPreview");
-//   const deleteButton = document.getElementById("deleteButton");
-//   const uploadRecordButton = document.getElementById("uploadRecordButton");
-//   const cancelRecordButton = document.getElementById("cancelRecordButton");
+    const now = new Date().toLocaleTimeString('en', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
 
-//   // --- References to HTML elements for Uploading ---
-//   const fileInput = document.getElementById("fileInput");
-//   const triggerFileInput = document.getElementById("triggerFileInput");
-//   const uploadButton = document.getElementById("uploadButton");
-//   const uploadStatus = document.getElementById("uploadStatus");
-//   const uploadZone = document.getElementById("uploadZone");
-//   const fileSelectedInfo = document.getElementById("fileSelectedInfo");
-//   const selectedFileName = document.getElementById("selectedFileName");
+    const chunk = document.createElement('div');
+    chunk.className = 'transcript-chunk';
+    chunk.innerHTML = `
+        <div class="chunk-text">${escapeHtml(text)}</div>
+        <div class="chunk-meta">
+            <span class="chunk-num">#${chunkId}</span>
+            <span class="chunk-time">${now}</span>
+        </div>
+    `;
+    content.appendChild(chunk);
 
-//   let mediaRecorder;
-//   let audioChunks = [];
-//   let mediaStream;
-//   let currentState = 'idle'; // 'idle', 'recording', 'preview'
-//   let audioBlob = null;
-//   let audioUrl = null;
-//   let isPaused = false;
+    // auto scroll only if user hasn't manually scrolled up
+    const body = document.getElementById('transcript-body');
+    if (autoScroll) {
+        body.scrollTop = body.scrollHeight;
+    }
 
-//   // =======================================================
-//   // --- Reusable Function to Upload Any File/Blob ---
-//   // =======================================================
-//   async function uploadFileOrBlob(fileOrBlob, statusElement) {
-//     const formData = new FormData();
+    // update badge
+    document.getElementById('transcript-count').textContent = `${chunkId} chunks`;
+}
 
-//     let filename;
-//     if (fileOrBlob instanceof Blob && !(fileOrBlob instanceof File)) {
-//       filename = `live_recording_${new Date().toISOString()}.webm`;
-//     } else {
-//       filename = fileOrBlob.name;
-//     }
+// ── Auto-scroll detection ─────────────────────────────
+function initScrollDetection() {
+    const body = document.getElementById('transcript-body');
+    body.addEventListener('scroll', () => {
+        const threshold = 60;
+        const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < threshold;
+        autoScroll = atBottom;
 
-//     formData.append("audio_file", fileOrBlob, filename);
+        // show/hide scroll-to-bottom button
+        const btn = document.getElementById('scroll-bottom-btn');
+        if (btn) btn.style.display = atBottom ? 'none' : 'flex';
+    });
+}
 
-//     statusElement.textContent = `Uploading ${filename}...`;
-//     statusElement.classList.remove("error");
-//     statusElement.classList.add("show");
+function scrollToBottom() {
+    const body = document.getElementById('transcript-body');
+    body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' });
+    autoScroll = true;
+    const btn = document.getElementById('scroll-bottom-btn');
+    if (btn) btn.style.display = 'none';
+}
 
-//     try {
-//       const response = await fetch("/upload-audio", {
-//         method: "POST",
-//         body: formData,
-//       });
+// ── Summary rendering ─────────────────────────────────
+function renderFinalSummary(text, meta) {
+    const el = document.getElementById('summary-content');
+    el.innerHTML = parseMarkdown(text);
 
-//       const result = await response.json();
+    const badge = document.getElementById('summary-badge');
+    badge.textContent = meta.strategy || 'direct';
 
-//       if (response.ok) {
-//         statusElement.textContent = result.message;
-//         statusElement.classList.remove("error");
-//         statusElement.classList.add("success");
-        
-//         if (currentState === 'preview') {
-//           setTimeout(() => {
-//             resetRecording();
-//           }, 2000);
-//         }
-//       } else {
-//         statusElement.textContent = `Error: ${result.error}`;
-//         statusElement.classList.add("error");
-        
-//         if (currentState === 'preview') {
-//           uploadRecordButton.disabled = false;
-//           cancelRecordButton.disabled = false;
-//         }
-//       }
-//     } catch (err) {
-//       console.error("Error uploading:", err);
-//       statusElement.textContent = "Error: Could not connect to server.";
-//       statusElement.classList.add("error");
-      
-//       if (currentState === 'preview') {
-//         uploadRecordButton.disabled = false;
-//         cancelRecordButton.disabled = false;
-//       }
-//     }
-//   }
+    toast('Final summary ready', 'success');
+}
 
-//   // ===========================================
-//   // --- PART 1: THREE-STATE RECORDING LOGIC ---
-//   // ===========================================
+function renderProgressiveSummary(text) {
+    const el = document.getElementById('progressive-content');
+    const time = new Date().toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
 
-//   // State Management Functions
-//   function switchToState(state) {
-//     // Hide all states
-//     idleState.classList.remove("active");
-//     recordingState.classList.remove("active");
-//     previewState.classList.remove("active");
-    
-//     // Show selected state
-//     if (state === 'idle') {
-//       idleState.classList.add("active");
-//       currentState = 'idle';
-//     } else if (state === 'recording') {
-//       recordingState.classList.add("active");
-//       currentState = 'recording';
-//       isPaused = false;
-//       updatePauseResumeButton();
-//     } else if (state === 'preview') {
-//       previewState.classList.add("active");
-//       currentState = 'preview';
-//     }
-//   }
+    el.innerHTML = `
+        <div class="progressive-tag">⟳ Updated at ${time}</div>
+        ${parseMarkdown(text)}
+    `;
 
-//   function resetRecording() {
-//     // Clean up media stream
-//     if (mediaStream) {
-//       mediaStream.getTracks().forEach((track) => track.stop());
-//       mediaStream = null;
-//     }
-    
-//     // Revoke audio URL to free memory
-//     if (audioUrl) {
-//       URL.revokeObjectURL(audioUrl);
-//       audioUrl = null;
-//     }
-    
-//     // Reset variables
-//     audioBlob = null;
-//     audioChunks = [];
-//     mediaRecorder = null;
-//     isPaused = false;
-    
-//     // Reset UI
-//     switchToState('idle');
-//     recordStatus.textContent = "Status: Ready";
-//     recordStatus.classList.remove("recording", "error", "success");
-//     previewStatus.textContent = "";
-//     previewStatus.classList.remove("show", "error", "success");
-//   }
+    document.getElementById('prog-badge').textContent = `Last: ${time}`;
+}
 
-//   function updatePauseResumeButton() {
-//     if (isPaused) {
-//       pauseResumeIcon.className = "fas fa-play";
-//       pauseResumeText.textContent = "Resume";
-//       pauseResumeButton.classList.add("resume");
-//       pauseResumeButton.classList.remove("pause");
-//     } else {
-//       pauseResumeIcon.className = "fas fa-pause";
-//       pauseResumeText.textContent = "Pause";
-//       pauseResumeButton.classList.add("pause");
-//       pauseResumeButton.classList.remove("resume");
-//     }
-//   }
+// ── Q&A rendering ─────────────────────────────────────
+function renderQAAnswer(answer, question) {
+    const messages = document.getElementById('qa-messages');
 
-//   // Idle State: Start Recording
-//   startButton.addEventListener("click", async () => {
-//     try {
-//       // Request microphone access
-//       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-//       mediaRecorder = new MediaRecorder(mediaStream);
-//       audioChunks = [];
-//       isPaused = false;
+    // remove thinking bubble
+    const thinking = document.getElementById('qa-thinking');
+    if (thinking) thinking.remove();
 
-//       // Collect audio data chunks
-//       mediaRecorder.ondataavailable = (event) => {
-//         if (event.data.size > 0) {
-//           audioChunks.push(event.data);
-//         }
-//       };
+    const answerEl = document.createElement('div');
+    answerEl.className = 'qa-message qa-answer';
+    answerEl.textContent = answer;
+    messages.appendChild(answerEl);
+    messages.scrollTop = messages.scrollHeight;
 
-//       // Handle recording stop
-//       mediaRecorder.onstop = () => {
-//         // Create audio blob from chunks
-//         audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-//         audioUrl = URL.createObjectURL(audioBlob);
-        
-//         // Set audio preview source
-//         audioPreview.src = audioUrl;
-        
-//         // Switch to preview state
-//         switchToState('preview');
-//         previewStatus.textContent = "Review your recording before uploading.";
-//         previewStatus.classList.add("show");
-        
-//         // Stop all tracks
-//         if (mediaStream) {
-//           mediaStream.getTracks().forEach((track) => track.stop());
-//         }
-//       };
+    // re-enable input
+    const input = document.getElementById('qa-input');
+    input.disabled = false;
+    document.getElementById('qa-send').disabled = false;
+    input.value = '';
+    input.focus();
+}
 
-//       // Handle pause event
-//       mediaRecorder.onpause = () => {
-//         isPaused = true;
-//         updatePauseResumeButton();
-//         recordingStatus.textContent = "Status: Paused";
-//       };
+// ── Stats ─────────────────────────────────────────────
+function updateStats() {
+    document.getElementById('stat-chunks').textContent = chunkCount;
+    document.getElementById('stat-words').textContent = wordCount;
+}
 
-//       // Handle resume event
-//       mediaRecorder.onresume = () => {
-//         isPaused = false;
-//         updatePauseResumeButton();
-//         recordingStatus.textContent = "Status: Recording...";
-//       };
+// ── Start recording ───────────────────────────────────
+async function startRecording() {
+    if (isRecording) {
+        toast('Already recording', 'error');
+        return;
+    }
 
-//       // Start recording
-//       mediaRecorder.start(1000); // Collect data every second
-      
-//       // Switch to recording state
-//       switchToState('recording');
-//       recordingStatus.textContent = "Status: Recording...";
-//       recordingStatus.classList.add("recording");
-      
-//     } catch (err) {
-//       console.error("Error accessing microphone:", err);
-//       recordStatus.textContent = "Error: Could not access microphone.";
-//       recordStatus.classList.add("error");
-//       resetRecording();
-//     }
-//   });
+    if (ws) { ws.close(); ws = null; }
 
-//   // Recording State: Pause/Resume Toggle
-//   pauseResumeButton.addEventListener("click", () => {
-//     if (!mediaRecorder || currentState !== 'recording') return;
+    const source = document.getElementById('audio-source').value;
+    sessionId = generateSessionId();
 
-//     try {
-//       if (mediaRecorder.state === "recording") {
-//         mediaRecorder.pause();
-//       } else if (mediaRecorder.state === "paused") {
-//         mediaRecorder.resume();
-//       }
-//     } catch (err) {
-//       console.error("Error pausing/resuming:", err);
-//       recordingStatus.textContent = "Error: Could not pause/resume recording.";
-//       recordingStatus.classList.add("error");
-//     }
-//   });
+    try {
+        stream = await _getAudioStream(source);
+    } catch (err) {
+        toast(`Audio access failed: ${err.message}`, 'error');
+        return;
+    }
 
-//   // Recording State: Stop Recording
-//   stopButton.addEventListener("click", () => {
-//     if (!mediaRecorder || currentState !== 'recording') return;
+    const wsUrl = `ws://${location.host}/ws/audio?session_id=${sessionId}`;
+    ws = new WebSocket(wsUrl);
 
-//     try {
-//       if (mediaRecorder.state === "recording" || mediaRecorder.state === "paused") {
-//         mediaRecorder.stop();
-//       }
-//     } catch (err) {
-//       console.error("Error stopping recording:", err);
-//       recordingStatus.textContent = "Error: Could not stop recording.";
-//       recordingStatus.classList.add("error");
-//     }
-//   });
+    ws.onopen = () => {
+        setStatus('connected', 'Connected');
+        toast('Session started', 'success');
+    };
 
-//   // Preview State: Delete/Cancel Button
-//   function handleCancel() {
-//     resetRecording();
-//   }
+    ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleMessage(data);
+        } catch (e) {
+            console.error('Failed to parse message:', e);
+        }
+    };
 
-//   deleteButton.addEventListener("click", handleCancel);
-//   cancelRecordButton.addEventListener("click", handleCancel);
+    ws.onclose = () => {
+        setStatus('', 'Disconnected');
+        if (isRecording) {
+            toast('Connection lost', 'error');
+            stopRecording();
+        }
+    };
 
-//   // Preview State: Upload Button
-//   uploadRecordButton.addEventListener("click", () => {
-//     if (!audioBlob || currentState !== 'preview') return;
+    ws.onerror = () => toast('WebSocket error', 'error');
 
-//     // Upload the blob to the server
-//     uploadFileOrBlob(audioBlob, previewStatus);
-    
-//     // Update UI
-//     previewStatus.textContent = "Uploading...";
-//     previewStatus.classList.add("show");
-//     previewStatus.classList.remove("error");
-    
-//     // Disable buttons during upload
-//     uploadRecordButton.disabled = true;
-//     cancelRecordButton.disabled = true;
-    
-//     // After upload completes, reset (handled in uploadFileOrBlob callback)
-//   });
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
 
-//   // ===========================================
-//   // --- PART 2: FILE UPLOAD LOGIC ---
-//   // ===========================================
+    headerChunk = null;
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
 
-//   // Trigger file input when upload button is clicked
-//   triggerFileInput.addEventListener("click", () => {
-//     fileInput.click();
-//   });
+    mediaRecorder.ondataavailable = async (event) => {
+        if (event.data.size === 0) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-//   // Handle file selection
-//   fileInput.addEventListener("change", (e) => {
-//     const file = e.target.files[0];
-//     if (file) {
-//       selectedFileName.textContent = `Selected: ${file.name}`;
-//       fileSelectedInfo.classList.add("show");
-//       uploadStatus.textContent = "";
-//       uploadStatus.classList.remove("show", "error");
-//     }
-//   });
+        const buffer = await event.data.arrayBuffer();
 
-//   // Upload button click handler
-//   uploadButton.addEventListener("click", () => {
-//     const file = fileInput.files[0];
-//     if (!file) {
-//       uploadStatus.textContent = "Please select a file first.";
-//       uploadStatus.classList.add("error", "show");
-//       return;
-//     }
+        if (headerChunk === null) {
+            headerChunk = buffer.slice(0, 4096);
+            ws.send(buffer);
+        } else {
+            const combined = new Uint8Array(headerChunk.byteLength + buffer.byteLength);
+            combined.set(new Uint8Array(headerChunk), 0);
+            combined.set(new Uint8Array(buffer), headerChunk.byteLength);
+            ws.send(combined.buffer);
+        }
+    };
 
-//     // Use the reusable upload function
-//     uploadFileOrBlob(file, uploadStatus);
-//   });
+    mediaRecorder.start(15000);
+    isRecording = true;
+    autoScroll = true;
+    startTimer();
 
-//   // ===========================================
-//   // --- Drag and Drop Functionality ---
-//   // ===========================================
-  
-//   uploadZone.addEventListener("dragover", (e) => {
-//     e.preventDefault();
-//     uploadZone.classList.add("dragover");
-//   });
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled = false;
+    document.getElementById('btn-summary').disabled = true;
+    document.getElementById('audio-source').disabled = true;
+    document.getElementById('wave').classList.add('active');
+    document.getElementById('qa-input').disabled = false;
+    document.getElementById('qa-send').disabled = false;
+    setStatus('recording', 'Recording');
 
-//   uploadZone.addEventListener("dragleave", () => {
-//     uploadZone.classList.remove("dragover");
-//   });
+    const sourceLabel = { mic: 'Mic only', tab: 'Tab audio', both: 'Mic + Tab' }[source];
+    toast(`Recording — ${sourceLabel}`, 'success');
+}
 
-//   uploadZone.addEventListener("drop", (e) => {
-//     e.preventDefault();
-//     uploadZone.classList.remove("dragover");
-    
-//     const files = e.dataTransfer.files;
-//     if (files.length > 0) {
-//       const file = files[0];
-//       if (file.type.startsWith("audio/") || file.type.startsWith("video/")) {
-//         const dataTransfer = new DataTransfer();
-//         dataTransfer.items.add(file);
-//         fileInput.files = dataTransfer.files;
-        
-//         const event = new Event("change", { bubbles: true });
-//         fileInput.dispatchEvent(event);
-//       } else {
-//         uploadStatus.textContent = "Please select an audio or video file.";
-//         uploadStatus.classList.add("error", "show");
-//       }
-//     }
-//   });
+// ── Get audio stream ──────────────────────────────────
+async function _getAudioStream(source) {
+    if (source === 'mic') {
+        return await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
 
-//   // Click on upload zone to trigger file input
-//   uploadZone.addEventListener("click", (e) => {
-//     // Only trigger if not clicking the button itself
-//     if (e.target === uploadZone || e.target.closest(".upload-zone-text") || e.target.closest(".upload-icon")) {
-//       fileInput.click();
-//     }
-//   });
-// });
+    if (source === 'tab') {
+        const tabStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: { echoCancellation: false, noiseSuppression: false, sampleRate: 16000 }
+        });
+        tabStream.getVideoTracks().forEach(t => t.stop());
+        if (tabStream.getAudioTracks().length === 0) {
+            throw new Error('No tab audio captured. Check "Share tab audio" in the dialog.');
+        }
+        return tabStream;
+    }
+
+    if (source === 'both') {
+        const [micStream, tabStream] = await Promise.all([
+            navigator.mediaDevices.getUserMedia({ audio: true }),
+            navigator.mediaDevices.getDisplayMedia({
+                video: true,
+                audio: { echoCancellation: false, noiseSuppression: false, sampleRate: 16000 }
+            })
+        ]);
+
+        tabStream.getVideoTracks().forEach(t => t.stop());
+
+        if (tabStream.getAudioTracks().length === 0) {
+            toast('Tab audio not shared — using mic only', 'info');
+            return micStream;
+        }
+
+        const audioContext = new AudioContext();
+        const destination = audioContext.createMediaStreamDestination();
+        audioContext.createMediaStreamSource(micStream).connect(destination);
+        audioContext.createMediaStreamSource(tabStream).connect(destination);
+
+        window._audioContext = audioContext;
+        window._micStream = micStream;
+        window._tabStream = tabStream;
+
+        return destination.stream;
+    }
+}
+
+// ── Stop recording ────────────────────────────────────
+function stopRecording() {
+    if (!isRecording) return;
+
+    isRecording = false;
+    headerChunk = null;
+
+    if (window._audioContext) { window._audioContext.close(); window._audioContext = null; }
+    if (window._micStream) { window._micStream.getTracks().forEach(t => t.stop()); window._micStream = null; }
+    if (window._tabStream) { window._tabStream.getTracks().forEach(t => t.stop()); window._tabStream = null; }
+
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+
+    setTimeout(() => {
+        if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    }, 500);
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stop' }));
+    }
+
+    stopTimer();
+
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled = true;
+    document.getElementById('btn-summary').disabled = false;
+    document.getElementById('audio-source').disabled = false;
+    document.getElementById('wave').classList.remove('active');
+    document.getElementById('qa-input').disabled = false;
+    document.getElementById('qa-send').disabled = false;
+    setStatus('connected', 'Stopped');
+
+    toast('Recording stopped', 'info', 4000);
+}
+
+// ── Generate summary ──────────────────────────────────
+function generateSummary() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        toast('Not connected', 'error');
+        return;
+    }
+
+    ws.send(JSON.stringify({ type: 'generate_summary' }));
+    document.getElementById('btn-summary').disabled = true;
+
+    document.getElementById('summary-content').innerHTML = `
+        <div class="thinking"><span></span><span></span><span></span></div>
+        <p style="color:var(--muted);font-size:12px;margin-top:10px;font-family:'Instrument Serif',serif;font-style:italic;">Generating summary…</p>
+    `;
+
+    toast('Generating summary…', 'info');
+}
+
+// ── Send question ─────────────────────────────────────
+function sendQuestion() {
+    const input = document.getElementById('qa-input');
+    const question = input.value.trim();
+
+    if (!question) return;
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        toast('Not connected', 'error');
+        return;
+    }
+
+    const messages = document.getElementById('qa-messages');
+
+    const qEl = document.createElement('div');
+    qEl.className = 'qa-message qa-question';
+    qEl.textContent = question;
+    messages.appendChild(qEl);
+
+    const thinking = document.createElement('div');
+    thinking.className = 'qa-message qa-answer';
+    thinking.id = 'qa-thinking';
+    thinking.innerHTML = '<div class="thinking"><span></span><span></span><span></span></div>';
+    messages.appendChild(thinking);
+    messages.scrollTop = messages.scrollHeight;
+
+    ws.send(JSON.stringify({ type: 'question', text: question }));
+
+    input.disabled = true;
+    document.getElementById('qa-send').disabled = true;
+}
+
+// ── Clear session ─────────────────────────────────────
+function clearSession() {
+    if (isRecording) {
+        toast('Stop recording first', 'error');
+        return;
+    }
+
+    document.getElementById('transcript-content').innerHTML = `
+        <div class="transcript-empty">
+            <div class="icon">🎙</div>
+            <p>Start recording to see live transcript</p>
+        </div>
+    `;
+    document.getElementById('summary-content').innerHTML = `
+        <div class="summary-empty">
+            <div class="icon">✦</div>
+            <p>Summary appears here after stopping recording</p>
+        </div>
+    `;
+    document.getElementById('progressive-content').innerHTML = `
+        <div class="summary-empty">
+            <div class="icon">⟳</div>
+            <p>Auto-updates every 10 minutes during recording</p>
+        </div>
+    `;
+    document.getElementById('qa-messages').innerHTML = '';
+    document.getElementById('transcript-count').textContent = '0 chunks';
+    document.getElementById('summary-badge').textContent = '—';
+    document.getElementById('prog-badge').textContent = 'Updates every 10 min';
+    document.getElementById('timer').textContent = '00:00';
+
+    chunkCount = 0;
+    wordCount = 0;
+    autoScroll = true;
+    updateStats();
+
+    if (ws) ws.close();
+
+    toast('Session cleared', 'info');
+}
+
+// ── Helpers ───────────────────────────────────────────
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function parseMarkdown(text) {
+    return text
+        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^- (.+)$/gm, '<li>$1</li>')
+        .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n\n/g, '<br>');
+}
+
+// ── Init ──────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+    initScrollDetection();
+
+    // Enter key for Q&A
+    document.getElementById('qa-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendQuestion();
+        }
+    });
+});

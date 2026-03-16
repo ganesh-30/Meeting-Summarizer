@@ -99,6 +99,8 @@ async def _handle_audio_chunk(
     session: MeetingSession,
     audio_bytes: bytes
 ):
+    if len(audio_bytes) < 5000: 
+        return
     session.chunk_count += 1
     chunk_id = f"{session.session_id}_{session.chunk_count}"
 
