@@ -216,3 +216,4 @@ credentials.json
 credentials_with_token.json
 service_account.json
 node_modules
+pdf_generator.py

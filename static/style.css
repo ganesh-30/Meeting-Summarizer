@@ -358,6 +358,7 @@ header {
     grid-template-rows: 1fr auto;
     gap: 16px;
     min-height: 0;
+    height: calc(100vh - 180px); 
 }
 
 /* ── Panel base ── */
@@ -417,8 +418,8 @@ header {
 /* ── Transcript panel ── */
 .transcript-panel {
     grid-row: 1 / 2;
-    height: 500px;        
-    max-height: 500px;    
+    min-height: 0;
+    height: 100%; 
 }
 
 #transcript-content {
@@ -506,12 +507,15 @@ header {
     flex-direction: column;
     gap: 16px;
     min-height: 0;
+    overflow: hidden; 
 }
+
 
 /* ── Summary panel ── */
 .summary-panel {
-    flex: 1;
-    min-height: 0;
+    overflow: hidden;
+    min-height: 80px;
+     
 }
 
 #summary-content {
@@ -599,8 +603,9 @@ header {
 
 /* ── Q&A panel ── */
 .qa-panel {
-    flex-shrink: 0;
-    min-height: 0;
+    flex: 1;
+    min-height: 120px;
+    overflow: hidden
 }
 
 .qa-messages {
@@ -803,4 +808,30 @@ header {
     }
     .right-col { grid-row: auto; }
     .progress-panel { grid-column: 1; grid-row: auto; }
+}
+
+/* resizing */
+.resize-handle {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    cursor: ns-resize;
+    flex-shrink: 0;
+    transition: background 0.2s;
+    position: relative;
+}
+
+.resize-handle:hover { background: var(--accent); }
+
+.resize-handle::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 32px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--muted);
+    opacity: 0.5;
 }

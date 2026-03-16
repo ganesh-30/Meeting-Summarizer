@@ -478,6 +478,7 @@ function parseMarkdown(text) {
 // ── Init ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     initScrollDetection();
+    initResizeHandle();
 
     // Enter key for Q&A
     document.getElementById('qa-input').addEventListener('keydown', (e) => {
@@ -487,3 +488,41 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
+function initResizeHandle() {
+    const handle = document.getElementById('resize-handle');
+    const summaryPanel = document.getElementById('summary-panel');
+    const rightCol = handle.parentElement;
+
+    let isDragging = false;
+    let startY = 0;
+    let startHeight = 0;
+
+    handle.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        startY = e.clientY;
+        startHeight = summaryPanel.offsetHeight;
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const delta = e.clientY - startY;
+        const rightColHeight = rightCol.offsetHeight;
+        const newHeight = Math.min(
+            Math.max(startHeight + delta, 80),        // min 80px
+            rightColHeight - 120 - 6                  // max: leave 120px for Q&A
+        );
+        summaryPanel.style.height = newHeight + 'px';
+        summaryPanel.style.flex = 'none';
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    });
+}
