@@ -19,3 +19,4 @@ google-auth-oauthlib
 google-api-python-client
 httpx
 langchain_groq
+werkzeug
