@@ -212,9 +212,7 @@ Navigate to **IAM & Admin → Service Accounts → Create Service Account**. Aft
 
 Open [Google Calendar](https://calendar.google.com) → your calendar → **Settings and sharing** → **Share with specific people** → add the `client_email` from `service_account.json` with **Make changes to events** permission.
 
-```
 
----
 
 ## Usage
 
