@@ -287,7 +287,9 @@ async function startRecording() {
 // ── Get audio stream ──────────────────────────────────
 async function _getAudioStream(source) {
     if (source === 'mic') {
-        return await navigator.mediaDevices.getUserMedia({ audio: true });
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log("🎤 Capturing:", micStream.getAudioTracks()[0].label);
+        return micStream;
     }
 
     if (source === 'tab') {
